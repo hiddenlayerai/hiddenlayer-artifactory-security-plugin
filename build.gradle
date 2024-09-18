@@ -7,7 +7,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'org.codehaus.groovy:groovy-all:3.0.22'
+    implementation 'org.apache.groovy:groovy-all:4.0.23'
     testImplementation 'commons-validator:commons-validator:1.9.0'
     testImplementation 'io.rest-assured:rest-assured:5.5.0'
     testImplementation 'org.testng:testng:7.10.2'
