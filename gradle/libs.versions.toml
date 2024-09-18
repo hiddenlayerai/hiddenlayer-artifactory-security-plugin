@@ -3,7 +3,7 @@
 
 [versions]
 commons-math3 = "3.6.1"
-groovy-all = "3.0.20"
+groovy-all = "3.0.22"
 guava = "33.0.0-jre"
 junit = "4.13.2"
 spock-core = "2.2-groovy-3.0"
