@@ -6,6 +6,9 @@ on:
       branches:
         - main
 
+permissions:
+    contents: read
+
 jobs:
     test-saas:
         name: Test plugin against SaaS model scanner
