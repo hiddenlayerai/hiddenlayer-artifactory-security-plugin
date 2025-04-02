@@ -19,7 +19,7 @@ jobs:
             RT_LICENSE_KEY: ${{ secrets.RT_LICENSE_KEY }}
         steps:
             - name: Harden Runner
-              uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7 # v2.10.1
+              uses: step-security/harden-runner@c6295a65d1254861815972266d5933fd6e532bdf # v2.11.1
               with:
                 egress-policy: audit
 
@@ -54,7 +54,7 @@ jobs:
             RT_LICENSE_KEY: ${{ secrets.RT_LICENSE_KEY }}
         steps:
             - name: Harden Runner
-              uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7 # v2.10.1
+              uses: step-security/harden-runner@c6295a65d1254861815972266d5933fd6e532bdf # v2.11.1
               with:
                 egress-policy: audit
 
