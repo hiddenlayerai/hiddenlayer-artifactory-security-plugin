@@ -10,8 +10,8 @@ permissions:
     contents: read
 
 jobs:
-    test-saas:
-        name: Test plugin against SaaS model scanner
+    test:
+        name: Test plugin
         runs-on: ubuntu-latest
         env:
             HL_CLIENT_ID: ${{ vars.HL_CLIENT_ID }}
@@ -43,46 +43,3 @@ jobs:
             - name: Stop containers
               if: always()
               run: docker compose down
-
-    test-enterprise:
-        name: Test plugin against Enterprise model scanner
-        runs-on: ubuntu-latest
-        env:
-            HL_API_URL: http://modscan-server:8000
-            HL_CLIENT_ID: ${{ vars.HL_CLIENT_ID }}
-            HL_CLIENT_SECRET: ${{ secrets.HL_CLIENT_SECRET }}
-            RT_LICENSE_KEY: ${{ secrets.RT_LICENSE_KEY }}
-        steps:
-            - name: Harden Runner
-              uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7 # v2.10.1
-              with:
-                egress-policy: audit
-
-            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-            - name: Setup Java
-              uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12 # v4.7.0
-              with:
-                java-version: '11'
-                distribution: 'temurin'
-            - name: Setup Gradle
-              uses: gradle/actions/setup-gradle@d156388eb19639ec20ade50009f3d199ce1e2808 # v4.1.0
-            - name: Grant write permission to plugins directory
-              # The artifactory service needs to be able to write to the plugins folder
-              run: chmod a+rwx -R core/src
-            - name: Login to Quay
-              uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
-              with:
-                registry: quay.io
-                username: ${{ vars.QUAY_USERNAME }}
-                password: ${{ secrets.QUAY_TOKEN }}
-            - name: Start containers
-              run: docker compose up -d
-            - name: Start Enterprise Model Scanner
-              run: docker compose -f src/test/enterprise-modscan/docker-compose.yaml up -d
-            - name: Setup tests
-              run: gradle artifactory_common
-            - name: Run plugin tests
-              run: gradle modelscanner
-            - name: Stop containers
-              if: always()
-              run: docker compose down && docker compose -f src/test/enterprise-modscan/docker-compose.yaml down
