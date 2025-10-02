@@ -8,6 +8,9 @@ repositories {
 
 dependencies {
     implementation 'org.apache.groovy:groovy-all:4.0.23'
+    implementation 'com.hiddenlayer.api:hiddenlayer-java:1.0.0'
+    implementation 'com.hiddenlayer.api:hiddenlayer-java-client-okhttp:1.0.0'
+    implementation 'com.hiddenlayer.api:hiddenlayer-java-core:1.0.0'
     testImplementation 'commons-validator:commons-validator:1.9.0'
     testImplementation 'io.rest-assured:rest-assured:5.5.0'
     testImplementation 'org.testng:testng:7.10.2'
@@ -21,6 +24,11 @@ test {
     testLogging {
         showStandardStreams = true
     }
+}
+
+task copy_deps(type: Copy) {
+    from configurations.runtimeClasspath
+    into 'build/deps'
 }
 
 task artifactory_common(type: Test) {

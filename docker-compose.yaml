@@ -29,6 +29,7 @@ services:
       - 5005:5005 # Debug port
     volumes:
       - ./core/src:/opt/jfrog/artifactory/var/etc/artifactory/plugins
+      - ./build/deps:/opt/jfrog/artifactory/var/etc/artifactory/plugins/lib
       - artifactory:/var/opt/jfrog/artifactory
       - ./config/artifactory.system.properties:/opt/jfrog/artifactory/var/etc/artifactory/artifactory.system.properties
       - ./config/access.config.patch.yml:/opt/jfrog/artifactory/var/etc/access/access.config.patch.yml

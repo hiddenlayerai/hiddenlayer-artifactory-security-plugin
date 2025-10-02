@@ -2,16 +2,22 @@ import org.artifactory.exception.CancelException
 import org.artifactory.repo.RepoPath
 import org.artifactory.request.Request
 
-import hiddenlayer.Api
-import hiddenlayer.Auth
+import com.hiddenlayer.api.client.HiddenLayerClient
+import com.hiddenlayer.api.client.okhttp.HiddenLayerOkHttpClient
+import com.hiddenlayer.api.models.scans.results.ScanReport
+
 import hiddenlayer.Config
 import hiddenlayer.models.ModelInfo
 import hiddenlayer.ModelScanner
 
 config = new Config(ctx)
-api = new Api(config, log)
-auth = new Auth(config, log)
-modelScanner = new ModelScanner(config, api, log)
+HiddenLayerClient client = HiddenLayerOkHttpClient.builder()
+    .baseUrl(config.apiUrl)
+    .clientId(config.clientId)
+    .clientSecret(config.clientSecret)
+    .build()
+
+modelScanner = new ModelScanner(config, client, log)
 
 ARTIFACT_STATUS_SAFE = 'SAFE'
 ARTIFACT_STATUS_UNSAFE = 'UNSAFE'
@@ -68,7 +74,6 @@ download {
             def properties = repositories.getProperties(responseRepoPath)
             log.info "file: $responseRepoPath properties: $properties"
             def artifactStatus = repositories.getProperties(responseRepoPath).getFirst('hiddenlayer.status')
-            String sensorId = modelScanner.getSensorIdForUrl(modelInfo.repoPath)
 
             if (artifactStatus == ARTIFACT_STATUS_UNSAFE) {
                 log.warn "Attempted to download unsafe file $responseRepoPath"
@@ -82,8 +87,8 @@ download {
 
                 repositories.setProperty(responseRepoPath, 'hiddenlayer.status', ARTIFACT_STATUS_PENDING)
                 def content = repositories.getContent(responseRepoPath)
-                modelScanner.submitHiddenLayerScan(modelInfo, content)
-                String modelStatus = modelScanner.getHiddenLayerStatus(modelInfo)
+                ScanReport report = modelScanner.submitHiddenLayerScan(modelInfo, content)
+                String modelStatus = modelScanner.parseModelStatus(report)
                 if (!modelStatus) {
                     log.error "Failed to get model status for file $responseRepoPath"
                     if (config.scanMissingRetry == true) {
@@ -94,11 +99,13 @@ download {
                     }
                     return
                 }
-                log.debug "file: $responseRepoPath status: $modelStatus"
+
                 repositories.setProperty(responseRepoPath, 'hiddenlayer.status', modelStatus)
-                if (config.deleteAfterScan && api.isSaaS()) {
-                    sensorId = modelScanner.getSensorIdForUrl(modelInfo.repoPath)
-                    api.deleteModel(sensorId)
+                if (config.deleteAfterScan) {
+                    String modelId = modelScanner.getModelIdFromScanReport(report)
+                    if (modelId) {
+                        client.models().delete(modelId)
+                    }
                 }
                 if (modelStatus == ARTIFACT_STATUS_UNSAFE) {
                     log.warn "Attempted to download unsafe file $responseRepoPath"

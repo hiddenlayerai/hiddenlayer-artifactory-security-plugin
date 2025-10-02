@@ -1,11 +1,13 @@
 package hiddenlayer
 
+import com.hiddenlayer.api.client.HiddenLayerClient
+import com.hiddenlayer.api.client.okhttp.HiddenLayerOkHttpClient
+import com.hiddenlayer.api.lib.ScanFileOptions
+import com.hiddenlayer.api.models.scans.results.ScanReport
+
 import groovy.transform.CompileDynamic
 
 import hiddenlayer.models.ModelInfo
-import hiddenlayer.models.ModelStatus
-import hiddenlayer.models.MultipartUploadPart
-import hiddenlayer.models.MultipartUploadResponse
 
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -24,16 +26,13 @@ import java.security.SecureRandom
 class ModelScanner {
 
     Config config
-    Api api
+    HiddenLayerClient client
     Logger log
-    Boolean isSaaS
-    Map<String, String> sensorCache = [:]
 
-    ModelScanner(Config config, Api api, Logger log) {
+    ModelScanner(Config config, HiddenLayerClient client, Logger log) {
         this.config = config
-        this.api = api
+        this.client = client
         this.log = log
-        this.isSaaS = api.isSaaS()
     }
 
     static ModelInfo parseModelInfo(RepoPath modelPath) {
@@ -51,16 +50,16 @@ class ModelScanner {
         ]
     }
 
-    static String parseModelStatus(ModelStatus modelStatus) {
-        if (modelStatus == null) {
+    static String parseModelStatus(ScanReport scanReport) {
+        if (scanReport == null) {
             return null
         }
 
-        if (modelStatus.status != 'done') {
+        if (scanReport.status() != ScanReport.Status.DONE) {
             return null
         }
 
-        return modelStatus.detections == '0' ? 'SAFE' : 'UNSAFE'
+        return scanReport.detectionCount() == 0 ? 'SAFE' : 'UNSAFE'
     }
 
     boolean shouldScanRepo(String repoKey) {
@@ -78,131 +77,57 @@ class ModelScanner {
         }
     }
 
-    ModelStatus waitForStatus(String sensorId) {
-        Number retries = 5
-        Number delay = 5
-        ModelStatus modelStatus
-        while (true) {
-            if (retries == 0) {
-                break
-            }
-            retries--
-            delay *= 2 + (new SecureRandom().nextDouble() * 0.1)
-            Thread.sleep(delay.toLong() * 1000)
+    ScanReport submitHiddenLayerScan(ModelInfo modelInfo, ResourceStreamHandle content) {
+        File tempFile = File.createTempFile('model-', '.tmp')
+        tempFile.deleteOnExit()
 
-            log.info "Checking model status for sensor $sensorId"
-            modelStatus = api.requestModelStatus(sensorId)
-            if (modelStatus.status == 'done' || modelStatus.status == 'failed') {
-                break
-            }
-        }
-        if (modelStatus == null) {
-            /* groovylint-disable-next-line ReturnsNullInsteadOfEmptyCollection */
-            return null
-        }
-        return modelStatus
-    }
-
-    void submitHiddenLayerScan(ModelInfo modelInfo, ResourceStreamHandle content) {
-        if (this.isSaaS) {
-            submitHiddenLayerScanToSaaSScanner(modelInfo, content)
-        } else {
-            submitHiddenLayerScanToEnterpriseScanner(modelInfo, content)
-        }
-    }
-
-    String getHiddenLayerStatus(ModelInfo modelInfo) {
-        String sensorId = sensorCache.get(modelInfo.repoPath)
-        if (!sensorId) {
-            return null
+        InputStream inputStream = content.inputStream
+        tempFile.withOutputStream { out ->
+            inputStream.transferTo(out)
         }
 
-        ModelStatus modelStatus = waitForStatus(sensorId)
-        return parseModelStatus(modelStatus)
-    }
-
-    String getSensorIdForUrl(String url) {
-        return sensorCache.get(url)
+        ScanFileOptions options = new ScanFileOptions(
+            modelInfo.toSensorName(),
+            tempFile.toPath().toString(),
+            "1.0.0",
+            true,
+            "JFrog Artifactory",
+        )
+        ScanReport result = client.modelScanner().scanFile(options)
+        return result
     }
 
     void startMissingScanOnBackground(RepoPath responseRepoPath) {
         Thread.start {
             ModelInfo modelInfo = modelScanner.parseModelInfo(responseRepoPath)
-            String sensorId = sensorCache.get(modelInfo.repoPath)
-            if (!sensorId) {
-                sensorId = api.createSensor(modelInfo)
-                sensorCache.put(modelInfo.repoPath, sensorId)
-            }
-            submitHiddenLayerScan(modelInfo)
             repositories.setProperty(responseRepoPath, 'hiddenlayer.status', 'PENDING')
-            String modelStatus = getHiddenLayerStatus(modelInfo)
+            ScanReport report = submitHiddenLayerScan(modelInfo)
+            String modelStatus = parseModelStatus(report)
             if (!modelStatus) {
                 log.error "Failed to get model status for file $responseRepoPath"
                 return
             }
             log.debug "file: $responseRepoPath status: $modelStatus"
             repositories.setProperty(responseRepoPath, 'hiddenlayer.status', modelStatus)
-            sensorCache.remove(modelInfo.repoPath)
             if (config.deleteAfterScan) {
-                api.deleteModel(sensorId)
+                String modelId = getModelIdFromScanReport(report)
+                if (modelId) {
+                    client.models().delete(modelId)
+                }
             }
         }
     }
 
-    private void submitHiddenLayerScanToSaaSScanner(ModelInfo modelInfo, ResourceStreamHandle content) {
-        // create sensor
-        String sensorId = api.createSensor(modelInfo)
-        if (sensorId == Auth.authenticationError) {
-            // retry once if authentication failed
-            sensorId = api.createSensor(modelInfo)
+    String getModelIdFromScanReport(ScanReport report) {
+        if (report == null || report.inventory() == null) {
+            return null
         }
-        if (!sensorId) {
-            // todo: handle error
-            throw new Exception('Failed to create sensor')
+        if (report.inventory().isScanModelComboV3()) {
+            return report.inventory().asScanModelComboV3().modelId()
+        } else if (report.inventory().isScanModelIdsV3()) {
+            return report.inventory().asScanModelIdsV3().modelId()
+        } else {
+            return null
         }
-        sensorCache.put(modelInfo.repoPath, sensorId)
-
-        MultipartUploadResponse upload = api.beginMultipartUpload(sensorId, content.size)
-        InputStream inputStream = content.inputStream
-        for (Number i = 0; i < upload.parts.size(); i++) {
-            MultipartUploadPart part = upload.parts[i]
-            Number partSize = part.end_offset - part.start_offset
-            byte[] buffer = new byte[partSize]
-            byte[] bytes = inputStream.readNBytes(partSize)
-            if (part.upload_url) {
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(part.upload_url))
-                        .header('Content-Type', 'application/octet-stream')
-                        .PUT(HttpRequest.BodyPublishers.ofByteArray(bytes))
-                        .build()
-                HttpClient client = HttpClient.newBuilder().build()
-                HttpResponse<String> response
-                try {
-                    response = client.send(request, HttpResponse.BodyHandlers.ofString())
-                } catch (Exception e) {
-                    log.error "Failed to upload model part: $e"
-                    throw e
-                }
-
-                Number responseCode = response.statusCode()
-                if (responseCode != HttpURLConnection.HTTP_OK) {
-                    log.error "Failed to upload model part: $response"
-                    /* groovylint-disable-next-line ReturnsNullInsteadOfEmptyCollection */
-                    throw new Exception("Failed to upload model part: $response")
-                }
-            } else {
-                api.uploadModelPart(sensorId, upload.uploadId, part.part_number, buffer)
-            }
-        }
-        api.completeMultipartUpload(sensorId, upload.uploadId)
-        api.createScanRequest(modelInfo, sensorId)
     }
-
-    private void submitHiddenLayerScanToEnterpriseScanner(ModelInfo modelInfo, ResourceStreamHandle content) {
-        String sensorId = UUID.randomUUID()
-        sensorCache.put(modelInfo.repoPath, sensorId)
-
-        api.submitEnterpriseScanRequest(modelInfo, sensorId, content.inputStream)
-    }
-
 }
