@@ -2,28 +2,35 @@ import org.artifactory.exception.CancelException
 import org.artifactory.repo.RepoPath
 import org.artifactory.request.Request
 
-import com.hiddenlayer.api.client.HiddenLayerClient
-import com.hiddenlayer.api.client.okhttp.HiddenLayerOkHttpClient
-import com.hiddenlayer.api.models.scans.results.ScanReport
-
 import hiddenlayer.Config
 import hiddenlayer.models.ModelInfo
 import hiddenlayer.ModelScanner
-import hiddenlayer.PluginClassLoaderManager
+import hiddenlayer.IsolatedClassLoaderHelper
+import hiddenlayer.HiddenLayerClientWrapper
 
-import org.artifactory.repo.RepoPath
-import org.artifactory.request.Request
-import java.net.URL
-import java.net.URLClassLoader
-
+// Initialize config
 config = new Config(ctx)
-HiddenLayerClient client = HiddenLayerOkHttpClient.builder()
-    .baseUrl(config.apiUrl)
-    .clientId(config.clientId)
-    .clientSecret(config.clientSecret)
-    .build()
 
-modelScanner = new ModelScanner(config, client, log)
+// Create isolated classloader to avoid Kotlin conflicts with Artifactory's runtime
+String pluginsLibDir = "${ctx.artifactoryHome.etcDir}/plugins/lib"
+log.info("Creating isolated classloader from: ${pluginsLibDir}")
+
+URLClassLoader isolatedClassLoader = IsolatedClassLoaderHelper.createIsolatedClassLoader(pluginsLibDir, log)
+if (isolatedClassLoader == null) {
+    log.error("Failed to create isolated classloader - plugin will not function")
+    return
+}
+
+// Create wrapper around HiddenLayer client (using reflection to avoid classloader conflicts)
+HiddenLayerClientWrapper clientWrapper = new HiddenLayerClientWrapper(
+    isolatedClassLoader,
+    config.apiUrl,
+    config.clientId,
+    config.clientSecret,
+    log
+)
+
+modelScanner = new ModelScanner(config, clientWrapper, log)
 
 ARTIFACT_STATUS_SAFE = 'SAFE'
 ARTIFACT_STATUS_UNSAFE = 'UNSAFE'
@@ -48,12 +55,10 @@ download {
                 status = HttpURLConnection.HTTP_NOT_FOUND
                 message = 'Artifact is unsafe'
             }
-            /*
             if (artifactStatus == ARTIFACT_STATUS_PENDING) {
                 status = HttpURLConnection.HTTP_NOT_FOUND
                 message = 'Artifact is being scanned by hiddenlayer'
             }
-            */
 
             if (artifactStatus != ARTIFACT_STATUS_SAFE) {
                 // altResponse is called first, then beforeDownload is called
@@ -87,23 +92,20 @@ download {
                 log.warn "Attempted to download unsafe file $responseRepoPath"
                 throw new CancelException('Artifact is unsafe', HttpURLConnection.HTTP_NOT_FOUND)
             }
-            /*
-            if (artifactStatus == ARTIFACT_STATUS_PENDING) {
-                throw new CancelException('Artifact is being scanned by hiddenlayer', HttpURLConnection.HTTP_NOT_FOUND)
-            }
-            */
             if (artifactStatus != ARTIFACT_STATUS_SAFE) {
                 // Artifact has not been scanned. Starting the scan process.
 
                 repositories.setProperty(responseRepoPath, 'hiddenlayer.status', ARTIFACT_STATUS_PENDING)
                 def content = repositories.getContent(responseRepoPath)
 
-                ScanReport report = modelScanner.submitHiddenLayerScan(modelInfo, content)
-                String modelStatus = modelScanner.parseModelStatus(report)
+                // Scan using isolated classloader wrapper
+                HiddenLayerClientWrapper.ScanResult result = modelScanner.submitHiddenLayerScan(modelInfo, content)
+                String modelStatus = modelScanner.parseModelStatus(result)
+                
                 if (!modelStatus) {
                     log.error "Failed to get model status for file $responseRepoPath"
                     if (config.scanMissingRetry == true) {
-                        modelScanner.startMissingScanOnBackground(responseRepoPath)
+                        modelScanner.startMissingScanOnBackground(responseRepoPath, repositories)
                     }
                     if (config.scanDecisionMissing == 'deny') {
                         throw new CancelException('Artifact has not been scanned by hiddenlayer', HttpURLConnection.HTTP_NOT_FOUND)
@@ -113,9 +115,9 @@ download {
 
                 repositories.setProperty(responseRepoPath, 'hiddenlayer.status', modelStatus)
                 if (config.deleteAfterScan) {
-                    String modelId = modelScanner.getModelIdFromScanReport(report)
+                    String modelId = result.getModelId()
                     if (modelId) {
-                        client.models().delete(modelId)
+                        clientWrapper.deleteModel(modelId)
                     }
                 }
                 if (modelStatus == ARTIFACT_STATUS_UNSAFE) {

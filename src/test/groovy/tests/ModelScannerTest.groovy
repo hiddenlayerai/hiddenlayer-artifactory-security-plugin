@@ -89,11 +89,11 @@ abstract class ModelScannerTest extends RepositorySteps {
     }
 
     String getSafePath() {
-        return "$repoKey/models/$safeModel/main/2021-10-27T18:29:01.000Z/pytorch_model.bin"
+        return "$repoKey/models/$safeModel/4746226cbb28f1e1c99977204b3ac22ecfe3a072_2021-10-27T18:29:01.000Z/model/pytorch_model.bin"
     }
 
     String getUnsafePath() {
-        return "$repoKey/models/$unsafeModel/243eb928376792047369d2ef072d03528c611909/2024-03-19T19:05:00.000Z/diffusion_pytorch_model.bin"
+        return "$repoKey/models/$unsafeModel/243eb928376792047369d2ef072d03528c611909_2024-03-19T19:05:00.000Z/model/diffusion_pytorch_model.bin"
     }
 
     void downloadModelTest(repo, model, file, isFileSafe) {

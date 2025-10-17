@@ -1,6 +1,5 @@
 plugins {
     id 'groovy'
-    id 'com.gradleup.shadow' version '8.3.9'
 }
 
 group = 'com.hiddenlayer.artifactory.plugin'
@@ -10,18 +9,29 @@ repositories {
     mavenCentral()
 }
 
+configurations {
+    // Configuration for dependencies that will be copied to plugins/lib
+    // This includes all transitive dependencies
+    pluginLibs {
+        transitive = true
+    }
+}
+
 dependencies {
     compileOnly 'org.apache.groovy:groovy-all:4.0.23'
-    implementation 'com.hiddenlayer.api:hiddenlayer-java:1.0.0'
-    implementation 'com.hiddenlayer.api:hiddenlayer-java-client-okhttp:1.0.0'
-    implementation 'com.hiddenlayer.api:hiddenlayer-java-core:1.0.0'
-
-    // Add unshaded Kotlin for Jackson and your plugin code
-    // These will be bundled (not relocated) so they work together
-    implementation "org.jetbrains.kotlin:kotlin-reflect:1.9.25"
-    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.25"
-
-    implementation "com.fasterxml.jackson.module:jackson-module-kotlin:2.18.2"
+    
+    // HiddenLayer SDK dependencies
+    // ONLY in pluginLibs - we cannot have them at compile time
+    // because that would load them in the wrong classloader
+    // We must use reflection to interact with them
+    pluginLibs 'com.hiddenlayer.api:hiddenlayer-java:1.0.0'
+    pluginLibs 'com.hiddenlayer.api:hiddenlayer-java-client-okhttp:1.0.0'
+    pluginLibs 'com.hiddenlayer.api:hiddenlayer-java-core:1.0.0'
+    
+    // Kotlin dependencies - for runtime in isolated classloader
+    pluginLibs "org.jetbrains.kotlin:kotlin-reflect:1.9.25"
+    pluginLibs "org.jetbrains.kotlin:kotlin-stdlib:1.9.25"
+    pluginLibs "com.fasterxml.jackson.module:jackson-module-kotlin:2.18.2"
 
     testImplementation 'org.apache.groovy:groovy-all:4.0.23'
     testImplementation 'commons-validator:commons-validator:1.9.0'
@@ -30,31 +40,6 @@ dependencies {
     testImplementation 'org.yaml:snakeyaml:2.3'
 }
 
-shadowJar {
-    archiveClassifier.set('')
-    archiveBaseName.set('modelScannerPlugin')
-
-    // Exclude signatures and other META-INF files that can cause issues
-    exclude 'META-INF/*.SF'
-    exclude 'META-INF/*.DSA'
-    exclude 'META-INF/*.RSA'
-
-    // Merge service files
-    mergeServiceFiles()
-}
-
-build.dependsOn shadowJar
-
-task packagePlugin(type: Zip, dependsOn: shadowJar) {
-    archiveFileName = 'modelScannerPlugin.zip'
-    destinationDirectory = file("$buildDir/distributions")
-
-    from(shadowJar.outputs.files) {
-        into 'lib'
-    }
-}
-
-build.finalizedBy packagePlugin
 
 test {
     useTestNG(){
@@ -66,8 +51,17 @@ test {
 }
 
 task copy_deps(type: Copy) {
-    from shadowJar.outputs.files
+    // Copy all runtime dependencies (HiddenLayer SDK + ALL transitive deps including Kotlin)
+    // These should be deployed to $JFROG_HOME/artifactory/var/etc/artifactory/plugins/lib
+    from configurations.pluginLibs
     into 'build/deps'
+    
+    doLast {
+        println "Dependencies copied to build/deps:"
+        configurations.pluginLibs.resolvedConfiguration.resolvedArtifacts.each {
+            println "  - ${it.moduleVersion.id}"
+        }
+    }
 }
 
 task artifactory_common(type: Test) {

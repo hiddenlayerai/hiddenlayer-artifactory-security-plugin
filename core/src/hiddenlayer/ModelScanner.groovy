@@ -1,35 +1,26 @@
 package hiddenlayer
 
-import com.hiddenlayer.api.client.HiddenLayerClient
-import com.hiddenlayer.api.client.okhttp.HiddenLayerOkHttpClient
-import com.hiddenlayer.api.lib.ScanFileOptions
-import com.hiddenlayer.api.models.scans.results.ScanReport
-
 import groovy.transform.CompileDynamic
 
 import hiddenlayer.models.ModelInfo
-
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 
 import org.artifactory.repo.RepoPath
 import org.artifactory.resource.ResourceStreamHandle
 
 import org.slf4j.Logger
-import java.security.SecureRandom
 
 /**
- * ModelScanner class to scan models
+ * ModelScanner class to scan models using HiddenLayer API
+ * Uses HiddenLayerClientWrapper which provides a clean API over reflection-based SDK access
  */
 @CompileDynamic
 class ModelScanner {
 
     Config config
-    HiddenLayerClient client
+    HiddenLayerClientWrapper client
     Logger log
 
-    ModelScanner(Config config, HiddenLayerClient client, Logger log) {
+    ModelScanner(Config config, HiddenLayerClientWrapper client, Logger log) {
         this.config = config
         this.client = client
         this.log = log
@@ -50,16 +41,16 @@ class ModelScanner {
         ]
     }
 
-    static String parseModelStatus(ScanReport scanReport) {
-        if (scanReport == null) {
+    static String parseModelStatus(HiddenLayerClientWrapper.ScanResult scanResult) {
+        if (scanResult == null) {
             return null
         }
 
-        if (scanReport.status() != ScanReport.Status.DONE) {
+        if (!scanResult.isDone()) {
             return null
         }
 
-        return scanReport.detectionCount() == 0 ? 'SAFE' : 'UNSAFE'
+        return scanResult.isSafe() ? 'SAFE' : 'UNSAFE'
     }
 
     boolean shouldScanRepo(String repoKey) {
@@ -77,69 +68,74 @@ class ModelScanner {
         }
     }
 
-    ScanReport submitHiddenLayerScan(ModelInfo modelInfo, ResourceStreamHandle content) {
+    HiddenLayerClientWrapper.ScanResult submitHiddenLayerScan(ModelInfo modelInfo, ResourceStreamHandle content) {
         File tempFile = File.createTempFile('model-', '.tmp')
         tempFile.deleteOnExit()
 
-        InputStream inputStream = content.inputStream
-        Number size = content.size
-        Number start_offset = 0
-        while (start_offset < size) {
-            long chunk_size = 8192
-            byte[] buffer = new byte[(int) chunk_size]
-            int bytesRead = inputStream.read(buffer, 0, (int) chunk_size)
-            if (bytesRead == -1) {
-                break
-            }
-            tempFile.withOutputStream { out ->
-                out.write(buffer, 0, bytesRead)
-            }
-            start_offset += bytesRead
-        }
-
-        ScanFileOptions options = new ScanFileOptions(
-            modelInfo.toSensorName(),
-            tempFile.toPath().toString(),
-            "1.0.0",
-            true,
-            "JFrog Artifactory",
-            "",
-        )
-        ScanReport result = client.modelScanner().scanFile(options)
-        return result
-    }
-
-    void startMissingScanOnBackground(RepoPath responseRepoPath) {
-        Thread.start {
-            ModelInfo modelInfo = modelScanner.parseModelInfo(responseRepoPath)
-            repositories.setProperty(responseRepoPath, 'hiddenlayer.status', 'PENDING')
-            ScanReport report = submitHiddenLayerScan(modelInfo)
-            String modelStatus = parseModelStatus(report)
-            if (!modelStatus) {
-                log.error "Failed to get model status for file $responseRepoPath"
-                return
-            }
-            log.debug "file: $responseRepoPath status: $modelStatus"
-            repositories.setProperty(responseRepoPath, 'hiddenlayer.status', modelStatus)
-            if (config.deleteAfterScan) {
-                String modelId = getModelIdFromScanReport(report)
-                if (modelId) {
-                    client.models().delete(modelId)
+        try {
+            InputStream inputStream = content.inputStream
+            Number size = content.size
+            Number start_offset = 0
+            while (start_offset < size) {
+                long chunk_size = 8192
+                byte[] buffer = new byte[(int) chunk_size]
+                int bytesRead = inputStream.read(buffer, 0, (int) chunk_size)
+                if (bytesRead == -1) {
+                    break
                 }
+                tempFile.withOutputStream { out ->
+                    out.write(buffer, 0, bytesRead)
+                }
+                start_offset += bytesRead
             }
+
+            // Use wrapper's clean API (no reflection in our code!)
+            HiddenLayerClientWrapper.ScanResult result = client.scanFile(
+                modelInfo.toSensorName(),
+                tempFile.toPath().toString(),
+                "1.0.0",
+                true,
+                "JFrog Artifactory",
+                ""
+            )
+            
+            return result
+        } catch (Exception e) {
+            log.error("Error submitting HiddenLayer scan", e)
+            throw e
+        } finally {
+            // Ensure temp file is cleaned up
+            tempFile.delete()
         }
     }
 
-    String getModelIdFromScanReport(ScanReport report) {
-        if (report == null || report.inventory() == null) {
-            return null
-        }
-        if (report.inventory().isScanModelComboV3()) {
-            return report.inventory().asScanModelComboV3().modelId()
-        } else if (report.inventory().isScanModelIdsV3()) {
-            return report.inventory().asScanModelIdsV3().modelId()
-        } else {
-            return null
+    void startMissingScanOnBackground(RepoPath responseRepoPath, def repositories) {
+        Thread.start {
+            try {
+                ModelInfo modelInfo = parseModelInfo(responseRepoPath)
+                repositories.setProperty(responseRepoPath, 'hiddenlayer.status', 'PENDING')
+                def content = repositories.getContent(responseRepoPath)
+                
+                HiddenLayerClientWrapper.ScanResult result = submitHiddenLayerScan(modelInfo, content)
+                String modelStatus = parseModelStatus(result)
+                
+                if (!modelStatus) {
+                    log.error "Failed to get model status for file $responseRepoPath"
+                    return
+                }
+                
+                log.debug "file: $responseRepoPath status: $modelStatus"
+                repositories.setProperty(responseRepoPath, 'hiddenlayer.status', modelStatus)
+                
+                if (config.deleteAfterScan) {
+                    String modelId = result.getModelId()
+                    if (modelId) {
+                        client.deleteModel(modelId)
+                    }
+                }
+            } catch (Exception e) {
+                log.error("Error in background scan", e)
+            }
         }
     }
 }
