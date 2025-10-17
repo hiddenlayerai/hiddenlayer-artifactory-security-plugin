@@ -1,5 +1,3 @@
-version: "3.7"
-
 services:
   # main: # IDE runs in this container
   #   working_dir: /workspace
@@ -14,19 +12,41 @@ services:
   #   # Overrides default command so things don't shut down after the process ends.
   #   command: /bin/sh -c "while sleep 1000; do :; done"
 
+  postgres:
+    image: postgres:13
+    environment:
+      - POSTGRES_DB=artifactory
+      - POSTGRES_USER=artifactory
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U artifactory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   artifactory:
     image: ${DOCKER_REGISTRY}/jfrog/artifactory-pro:${ARTIFACTORY_VERSION}
     container_name: artifactory
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       - HL_CLIENT_ID=${HL_CLIENT_ID}
       - HL_CLIENT_SECRET=${HL_CLIENT_SECRET}
       - HL_API_URL=${HL_API_URL}
       - JF_ROUTER_ENTRYPOINTS_EXTERNALPORT=${JF_ROUTER_ENTRYPOINTS_EXTERNALPORT}
-      - JAVA_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
+      - JF_SHARED_DATABASE_TYPE=postgresql
+      - JF_SHARED_DATABASE_DRIVER=org.postgresql.Driver
+      - JF_SHARED_DATABASE_URL=jdbc:postgresql://postgres:5432/artifactory
+      - JF_SHARED_DATABASE_USERNAME=artifactory
+      - JF_SHARED_DATABASE_PASSWORD=password
+      - JF_SHARED_SECURITY_MASTERKEY=ca5902baf7794f57037a55ec893ae7b6
+      - JF_SHARED_SECURITY_JOINKEY=fa83de614cbc1ced190dc29e61d895bf
     ports:
       - 8081:8081 # /artifactory API
       - ${JF_ROUTER_ENTRYPOINTS_EXTERNALPORT}:${JF_ROUTER_ENTRYPOINTS_EXTERNALPORT} # UI
-      - 5005:5005 # Debug port
     volumes:
       - ./core/src:/opt/jfrog/artifactory/var/etc/artifactory/plugins
       - ./build/deps:/opt/jfrog/artifactory/var/etc/artifactory/plugins/lib
@@ -44,6 +64,7 @@ services:
         hard: 40000
 
 volumes:
+  postgres-data:
   artifactory:
 
 networks:

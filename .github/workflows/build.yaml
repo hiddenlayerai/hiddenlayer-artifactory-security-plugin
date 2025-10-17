@@ -34,6 +34,8 @@ jobs:
             - name: Grant write permission to plugins directory
               # The artifactory service needs to be able to write to the plugins folder
               run: chmod a+rwx -R core/src
+            - name: Copy dependencies
+              run: gradle copy_deps
             - name: Start containers
               run: docker compose up -d
             - name: Setup tests

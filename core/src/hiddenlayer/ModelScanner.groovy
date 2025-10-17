@@ -82,8 +82,19 @@ class ModelScanner {
         tempFile.deleteOnExit()
 
         InputStream inputStream = content.inputStream
-        tempFile.withOutputStream { out ->
-            inputStream.transferTo(out)
+        Number size = content.size
+        Number start_offset = 0
+        while (start_offset < size) {
+            long chunk_size = 8192
+            byte[] buffer = new byte[(int) chunk_size]
+            int bytesRead = inputStream.read(buffer, 0, (int) chunk_size)
+            if (bytesRead == -1) {
+                break
+            }
+            tempFile.withOutputStream { out ->
+                out.write(buffer, 0, bytesRead)
+            }
+            start_offset += bytesRead
         }
 
         ScanFileOptions options = new ScanFileOptions(
@@ -92,6 +103,7 @@ class ModelScanner {
             "1.0.0",
             true,
             "JFrog Artifactory",
+            "",
         )
         ScanReport result = client.modelScanner().scanFile(options)
         return result

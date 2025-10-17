@@ -9,6 +9,12 @@ import com.hiddenlayer.api.models.scans.results.ScanReport
 import hiddenlayer.Config
 import hiddenlayer.models.ModelInfo
 import hiddenlayer.ModelScanner
+import hiddenlayer.PluginClassLoaderManager
+
+import org.artifactory.repo.RepoPath
+import org.artifactory.request.Request
+import java.net.URL
+import java.net.URLClassLoader
 
 config = new Config(ctx)
 HiddenLayerClient client = HiddenLayerOkHttpClient.builder()
@@ -42,10 +48,12 @@ download {
                 status = HttpURLConnection.HTTP_NOT_FOUND
                 message = 'Artifact is unsafe'
             }
+            /*
             if (artifactStatus == ARTIFACT_STATUS_PENDING) {
                 status = HttpURLConnection.HTTP_NOT_FOUND
                 message = 'Artifact is being scanned by hiddenlayer'
             }
+            */
 
             if (artifactStatus != ARTIFACT_STATUS_SAFE) {
                 // altResponse is called first, then beforeDownload is called
@@ -57,7 +65,7 @@ download {
 
                 log.info('Artifact has not been scanned yet')
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             log.error "Error handling altResponse: $e"
             throw e
         }
@@ -79,14 +87,17 @@ download {
                 log.warn "Attempted to download unsafe file $responseRepoPath"
                 throw new CancelException('Artifact is unsafe', HttpURLConnection.HTTP_NOT_FOUND)
             }
-            if (artifactStatus == ARTIFACT_STATUS_PENDING && sensorId) {
+            /*
+            if (artifactStatus == ARTIFACT_STATUS_PENDING) {
                 throw new CancelException('Artifact is being scanned by hiddenlayer', HttpURLConnection.HTTP_NOT_FOUND)
             }
-            if (artifactStatus != ARTIFACT_STATUS_SAFE || (artifactStatus == ARTIFACT_STATUS_PENDING && !sensorId)) {
+            */
+            if (artifactStatus != ARTIFACT_STATUS_SAFE) {
                 // Artifact has not been scanned. Starting the scan process.
 
                 repositories.setProperty(responseRepoPath, 'hiddenlayer.status', ARTIFACT_STATUS_PENDING)
                 def content = repositories.getContent(responseRepoPath)
+
                 ScanReport report = modelScanner.submitHiddenLayerScan(modelInfo, content)
                 String modelStatus = modelScanner.parseModelStatus(report)
                 if (!modelStatus) {
@@ -112,7 +123,7 @@ download {
                     throw new CancelException('Artifact is unsafe', HttpURLConnection.HTTP_NOT_FOUND)
                 }
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             log.error "Error handling beforeDownload: $e"
 
             throw e
