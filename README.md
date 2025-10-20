@@ -14,16 +14,18 @@ of the model scanning service.
 
 ## Installation
 
-This plugin needs to be added to the `$ARTIFACTORY_HOME/etc/plugins` directory.
+This plugin has dependencies on the HiddenLayer SDK. This can be retrieved by running `gradle copy_deps` which will put all dependencies in 
+`./build/deps`. Copy the HiddenLayer dependencies to `$JFROG_HOME/artifactory/var/etc/artifactory/plugins/lib`
+
+This plugin needs to be added to the `$JFROG_HOME/artifactory/var/etc/artifactory/plugins` directory.
 This can be done by copying the contentes of `./core/src` to the plugins directory.
 
 ## Configuration
 
-The plugin can be configured by editing the `hiddenlayer.properties` file in the `$ARTIFACTORY_HOME/etc/plugins` directory.
+The plugin can be configured by editing the `hiddenlayer.properties` file in the `$JFROG_HOME/artifactory/var/etc/artifactory/plugins` directory.
 
 The following configuartion options are available:
 
-* `hiddenlayer.auth.url` - The URL for the HiddenLayer API. Required for SaaS, Optional for Enterprise
 * `hiddenlayer.auth.client_id` - The client ID for the HiddenLayer API. Required for SaaS, Optional for Enterprise
 * `hiddenlayer.auth.client_secret` - The client secret for the HiddenLayer API. Required for SaaS, Optional for Enterprise
 * `hiddenlayer.api.url` - The URL for the HiddenLayer API. Required. Change to the URL of your enterprise instance if using an enterprise instance.
@@ -95,6 +97,7 @@ docker compose up
 2. Run the tests
 ```bash
 gradle clean
+gradle copy_deps
 gradle artifactory_common
 gradle modelscanner
 ```

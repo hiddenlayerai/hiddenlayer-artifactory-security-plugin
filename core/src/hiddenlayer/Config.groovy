@@ -9,10 +9,9 @@ import org.artifactory.spring.InternalArtifactoryContext
 @CompileDynamic
 class Config {
 
-    String authKey
-    String authUrl
+    String clientId
+    String clientSecret
     String apiUrl
-    String apiVersion
     String[] scanRepos = []
     String scanDecisionMissing
     boolean scanMissingRetry
@@ -31,19 +30,14 @@ class Config {
         def api = config.get('api')
         def scan = config.get('scan')
 
-        String clientId = System.getenv('HL_CLIENT_ID') != null ? System.getenv('HL_CLIENT_ID') : auth.get('client_id')
-        String clientSecret = System.getenv('HL_CLIENT_SECRET') != null
+        clientId = System.getenv('HL_CLIENT_ID') != null ? System.getenv('HL_CLIENT_ID') : auth.get('client_id')
+        clientSecret = System.getenv('HL_CLIENT_SECRET') != null
             ? System.getenv('HL_CLIENT_SECRET')
             : auth.get('client_secret')
 
-        String hlauth = Base64.encoder.encodeToString((clientId + ':' + clientSecret).bytes)
-        authKey = hlauth
-        authUrl = auth.get('url') as String
         apiUrl = System.getenv('HL_API_URL') != null && System.getenv('HL_API_URL') != ''
             ? System.getenv('HL_API_URL')
             : api.get('url') as String
-        String version = api.get('version') as String
-        apiVersion = version ?: 'v2'
         String repos = scan.get('repo_ids') as String
         scanRepos = repos.split(',')
         scanDecisionMissing = scan.get('decision_missing') as String
