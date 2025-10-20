@@ -2,16 +2,35 @@ import org.artifactory.exception.CancelException
 import org.artifactory.repo.RepoPath
 import org.artifactory.request.Request
 
-import hiddenlayer.Api
-import hiddenlayer.Auth
 import hiddenlayer.Config
 import hiddenlayer.models.ModelInfo
 import hiddenlayer.ModelScanner
+import hiddenlayer.IsolatedClassLoaderHelper
+import hiddenlayer.HiddenLayerClientWrapper
 
+// Initialize config
 config = new Config(ctx)
-api = new Api(config, log)
-auth = new Auth(config, log)
-modelScanner = new ModelScanner(config, api, log)
+
+// Create isolated classloader to avoid Kotlin conflicts with Artifactory's runtime
+String pluginsLibDir = "${ctx.artifactoryHome.etcDir}/plugins/lib"
+log.info("Creating isolated classloader from: ${pluginsLibDir}")
+
+URLClassLoader isolatedClassLoader = IsolatedClassLoaderHelper.createIsolatedClassLoader(pluginsLibDir, log)
+if (isolatedClassLoader == null) {
+    log.error("Failed to create isolated classloader - plugin will not function")
+    return
+}
+
+// Create wrapper around HiddenLayer client (using reflection to avoid classloader conflicts)
+HiddenLayerClientWrapper clientWrapper = new HiddenLayerClientWrapper(
+    isolatedClassLoader,
+    config.apiUrl,
+    config.clientId,
+    config.clientSecret,
+    log
+)
+
+modelScanner = new ModelScanner(config, clientWrapper, log)
 
 ARTIFACT_STATUS_SAFE = 'SAFE'
 ARTIFACT_STATUS_UNSAFE = 'UNSAFE'
@@ -51,7 +70,7 @@ download {
 
                 log.info('Artifact has not been scanned yet')
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             log.error "Error handling altResponse: $e"
             throw e
         }
@@ -68,44 +87,45 @@ download {
             def properties = repositories.getProperties(responseRepoPath)
             log.info "file: $responseRepoPath properties: $properties"
             def artifactStatus = repositories.getProperties(responseRepoPath).getFirst('hiddenlayer.status')
-            String sensorId = modelScanner.getSensorIdForUrl(modelInfo.repoPath)
 
             if (artifactStatus == ARTIFACT_STATUS_UNSAFE) {
                 log.warn "Attempted to download unsafe file $responseRepoPath"
                 throw new CancelException('Artifact is unsafe', HttpURLConnection.HTTP_NOT_FOUND)
             }
-            if (artifactStatus == ARTIFACT_STATUS_PENDING && sensorId) {
-                throw new CancelException('Artifact is being scanned by hiddenlayer', HttpURLConnection.HTTP_NOT_FOUND)
-            }
-            if (artifactStatus != ARTIFACT_STATUS_SAFE || (artifactStatus == ARTIFACT_STATUS_PENDING && !sensorId)) {
+            if (artifactStatus != ARTIFACT_STATUS_SAFE) {
                 // Artifact has not been scanned. Starting the scan process.
 
                 repositories.setProperty(responseRepoPath, 'hiddenlayer.status', ARTIFACT_STATUS_PENDING)
                 def content = repositories.getContent(responseRepoPath)
-                modelScanner.submitHiddenLayerScan(modelInfo, content)
-                String modelStatus = modelScanner.getHiddenLayerStatus(modelInfo)
+
+                // Scan using isolated classloader wrapper
+                HiddenLayerClientWrapper.ScanResult result = modelScanner.submitHiddenLayerScan(modelInfo, content)
+                String modelStatus = modelScanner.parseModelStatus(result)
+                
                 if (!modelStatus) {
                     log.error "Failed to get model status for file $responseRepoPath"
                     if (config.scanMissingRetry == true) {
-                        modelScanner.startMissingScanOnBackground(responseRepoPath)
+                        modelScanner.startMissingScanOnBackground(responseRepoPath, repositories)
                     }
                     if (config.scanDecisionMissing == 'deny') {
                         throw new CancelException('Artifact has not been scanned by hiddenlayer', HttpURLConnection.HTTP_NOT_FOUND)
                     }
                     return
                 }
-                log.debug "file: $responseRepoPath status: $modelStatus"
+
                 repositories.setProperty(responseRepoPath, 'hiddenlayer.status', modelStatus)
-                if (config.deleteAfterScan && api.isSaaS()) {
-                    sensorId = modelScanner.getSensorIdForUrl(modelInfo.repoPath)
-                    api.deleteModel(sensorId)
+                if (config.deleteAfterScan) {
+                    String modelId = result.getModelId()
+                    if (modelId) {
+                        clientWrapper.deleteModel(modelId)
+                    }
                 }
                 if (modelStatus == ARTIFACT_STATUS_UNSAFE) {
                     log.warn "Attempted to download unsafe file $responseRepoPath"
                     throw new CancelException('Artifact is unsafe', HttpURLConnection.HTTP_NOT_FOUND)
                 }
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             log.error "Error handling beforeDownload: $e"
 
             throw e

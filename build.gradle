@@ -2,17 +2,44 @@ plugins {
     id 'groovy'
 }
 
+group = 'com.hiddenlayer.artifactory.plugin'
+version = '1.0.0'
+
 repositories {
     mavenCentral()
 }
 
+configurations {
+    // Configuration for dependencies that will be copied to plugins/lib
+    // This includes all transitive dependencies
+    pluginLibs {
+        transitive = true
+    }
+}
+
 dependencies {
-    implementation 'org.apache.groovy:groovy-all:4.0.23'
+    compileOnly 'org.apache.groovy:groovy-all:4.0.23'
+    
+    // HiddenLayer SDK dependencies
+    // ONLY in pluginLibs - we cannot have them at compile time
+    // because that would load them in the wrong classloader
+    // We must use reflection to interact with them
+    pluginLibs 'com.hiddenlayer.api:hiddenlayer-java:1.0.0'
+    pluginLibs 'com.hiddenlayer.api:hiddenlayer-java-client-okhttp:1.0.0'
+    pluginLibs 'com.hiddenlayer.api:hiddenlayer-java-core:1.0.0'
+    
+    // Kotlin dependencies - for runtime in isolated classloader
+    pluginLibs "org.jetbrains.kotlin:kotlin-reflect:1.9.25"
+    pluginLibs "org.jetbrains.kotlin:kotlin-stdlib:1.9.25"
+    pluginLibs "com.fasterxml.jackson.module:jackson-module-kotlin:2.18.2"
+
+    testImplementation 'org.apache.groovy:groovy-all:4.0.23'
     testImplementation 'commons-validator:commons-validator:1.9.0'
     testImplementation 'io.rest-assured:rest-assured:5.5.0'
     testImplementation 'org.testng:testng:7.10.2'
     testImplementation 'org.yaml:snakeyaml:2.3'
 }
+
 
 test {
     useTestNG(){
@@ -20,6 +47,20 @@ test {
     }
     testLogging {
         showStandardStreams = true
+    }
+}
+
+task copy_deps(type: Copy) {
+    // Copy all runtime dependencies (HiddenLayer SDK + ALL transitive deps including Kotlin)
+    // These should be deployed to $JFROG_HOME/artifactory/var/etc/artifactory/plugins/lib
+    from configurations.pluginLibs
+    into 'build/deps'
+    
+    doLast {
+        println "Dependencies copied to build/deps:"
+        configurations.pluginLibs.resolvedConfiguration.resolvedArtifacts.each {
+            println "  - ${it.moduleVersion.id}"
+        }
     }
 }
 

@@ -3,37 +3,27 @@ package hiddenlayer
 import groovy.transform.CompileDynamic
 
 import hiddenlayer.models.ModelInfo
-import hiddenlayer.models.ModelStatus
-import hiddenlayer.models.MultipartUploadPart
-import hiddenlayer.models.MultipartUploadResponse
-
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 
 import org.artifactory.repo.RepoPath
 import org.artifactory.resource.ResourceStreamHandle
 
 import org.slf4j.Logger
-import java.security.SecureRandom
 
 /**
- * ModelScanner class to scan models
+ * ModelScanner class to scan models using HiddenLayer API
+ * Uses HiddenLayerClientWrapper which provides a clean API over reflection-based SDK access
  */
 @CompileDynamic
 class ModelScanner {
 
     Config config
-    Api api
+    HiddenLayerClientWrapper client
     Logger log
-    Boolean isSaaS
-    Map<String, String> sensorCache = [:]
 
-    ModelScanner(Config config, Api api, Logger log) {
+    ModelScanner(Config config, HiddenLayerClientWrapper client, Logger log) {
         this.config = config
-        this.api = api
+        this.client = client
         this.log = log
-        this.isSaaS = api.isSaaS()
     }
 
     static ModelInfo parseModelInfo(RepoPath modelPath) {
@@ -51,16 +41,16 @@ class ModelScanner {
         ]
     }
 
-    static String parseModelStatus(ModelStatus modelStatus) {
-        if (modelStatus == null) {
+    static String parseModelStatus(HiddenLayerClientWrapper.ScanResult scanResult) {
+        if (scanResult == null) {
             return null
         }
 
-        if (modelStatus.status != 'done') {
+        if (!scanResult.isDone()) {
             return null
         }
 
-        return modelStatus.detections == '0' ? 'SAFE' : 'UNSAFE'
+        return scanResult.isSafe() ? 'SAFE' : 'UNSAFE'
     }
 
     boolean shouldScanRepo(String repoKey) {
@@ -78,131 +68,74 @@ class ModelScanner {
         }
     }
 
-    ModelStatus waitForStatus(String sensorId) {
-        Number retries = 5
-        Number delay = 5
-        ModelStatus modelStatus
-        while (true) {
-            if (retries == 0) {
-                break
+    HiddenLayerClientWrapper.ScanResult submitHiddenLayerScan(ModelInfo modelInfo, ResourceStreamHandle content) {
+        File tempFile = File.createTempFile('model-', '.tmp')
+        tempFile.deleteOnExit()
+
+        try {
+            InputStream inputStream = content.inputStream
+            Number size = content.size
+            Number start_offset = 0
+            while (start_offset < size) {
+                long chunk_size = 8192
+                byte[] buffer = new byte[(int) chunk_size]
+                int bytesRead = inputStream.read(buffer, 0, (int) chunk_size)
+                if (bytesRead == -1) {
+                    break
+                }
+                tempFile.withOutputStream { out ->
+                    out.write(buffer, 0, bytesRead)
+                }
+                start_offset += bytesRead
             }
-            retries--
-            delay *= 2 + (new SecureRandom().nextDouble() * 0.1)
-            Thread.sleep(delay.toLong() * 1000)
 
-            log.info "Checking model status for sensor $sensorId"
-            modelStatus = api.requestModelStatus(sensorId)
-            if (modelStatus.status == 'done' || modelStatus.status == 'failed') {
-                break
-            }
-        }
-        if (modelStatus == null) {
-            /* groovylint-disable-next-line ReturnsNullInsteadOfEmptyCollection */
-            return null
-        }
-        return modelStatus
-    }
-
-    void submitHiddenLayerScan(ModelInfo modelInfo, ResourceStreamHandle content) {
-        if (this.isSaaS) {
-            submitHiddenLayerScanToSaaSScanner(modelInfo, content)
-        } else {
-            submitHiddenLayerScanToEnterpriseScanner(modelInfo, content)
+            // Use wrapper's clean API (no reflection in our code!)
+            HiddenLayerClientWrapper.ScanResult result = client.scanFile(
+                modelInfo.toSensorName(),
+                tempFile.toPath().toString(),
+                "1.0.0",
+                true,
+                "JFrog Artifactory",
+                ""
+            )
+            
+            return result
+        } catch (Exception e) {
+            log.error("Error submitting HiddenLayer scan", e)
+            throw e
+        } finally {
+            // Ensure temp file is cleaned up
+            tempFile.delete()
         }
     }
 
-    String getHiddenLayerStatus(ModelInfo modelInfo) {
-        String sensorId = sensorCache.get(modelInfo.repoPath)
-        if (!sensorId) {
-            return null
-        }
-
-        ModelStatus modelStatus = waitForStatus(sensorId)
-        return parseModelStatus(modelStatus)
-    }
-
-    String getSensorIdForUrl(String url) {
-        return sensorCache.get(url)
-    }
-
-    void startMissingScanOnBackground(RepoPath responseRepoPath) {
+    void startMissingScanOnBackground(RepoPath responseRepoPath, def repositories) {
         Thread.start {
-            ModelInfo modelInfo = modelScanner.parseModelInfo(responseRepoPath)
-            String sensorId = sensorCache.get(modelInfo.repoPath)
-            if (!sensorId) {
-                sensorId = api.createSensor(modelInfo)
-                sensorCache.put(modelInfo.repoPath, sensorId)
-            }
-            submitHiddenLayerScan(modelInfo)
-            repositories.setProperty(responseRepoPath, 'hiddenlayer.status', 'PENDING')
-            String modelStatus = getHiddenLayerStatus(modelInfo)
-            if (!modelStatus) {
-                log.error "Failed to get model status for file $responseRepoPath"
-                return
-            }
-            log.debug "file: $responseRepoPath status: $modelStatus"
-            repositories.setProperty(responseRepoPath, 'hiddenlayer.status', modelStatus)
-            sensorCache.remove(modelInfo.repoPath)
-            if (config.deleteAfterScan) {
-                api.deleteModel(sensorId)
-            }
-        }
-    }
-
-    private void submitHiddenLayerScanToSaaSScanner(ModelInfo modelInfo, ResourceStreamHandle content) {
-        // create sensor
-        String sensorId = api.createSensor(modelInfo)
-        if (sensorId == Auth.authenticationError) {
-            // retry once if authentication failed
-            sensorId = api.createSensor(modelInfo)
-        }
-        if (!sensorId) {
-            // todo: handle error
-            throw new Exception('Failed to create sensor')
-        }
-        sensorCache.put(modelInfo.repoPath, sensorId)
-
-        MultipartUploadResponse upload = api.beginMultipartUpload(sensorId, content.size)
-        InputStream inputStream = content.inputStream
-        for (Number i = 0; i < upload.parts.size(); i++) {
-            MultipartUploadPart part = upload.parts[i]
-            Number partSize = part.end_offset - part.start_offset
-            byte[] buffer = new byte[partSize]
-            byte[] bytes = inputStream.readNBytes(partSize)
-            if (part.upload_url) {
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(part.upload_url))
-                        .header('Content-Type', 'application/octet-stream')
-                        .PUT(HttpRequest.BodyPublishers.ofByteArray(bytes))
-                        .build()
-                HttpClient client = HttpClient.newBuilder().build()
-                HttpResponse<String> response
-                try {
-                    response = client.send(request, HttpResponse.BodyHandlers.ofString())
-                } catch (Exception e) {
-                    log.error "Failed to upload model part: $e"
-                    throw e
+            try {
+                ModelInfo modelInfo = parseModelInfo(responseRepoPath)
+                repositories.setProperty(responseRepoPath, 'hiddenlayer.status', 'PENDING')
+                def content = repositories.getContent(responseRepoPath)
+                
+                HiddenLayerClientWrapper.ScanResult result = submitHiddenLayerScan(modelInfo, content)
+                String modelStatus = parseModelStatus(result)
+                
+                if (!modelStatus) {
+                    log.error "Failed to get model status for file $responseRepoPath"
+                    return
                 }
-
-                Number responseCode = response.statusCode()
-                if (responseCode != HttpURLConnection.HTTP_OK) {
-                    log.error "Failed to upload model part: $response"
-                    /* groovylint-disable-next-line ReturnsNullInsteadOfEmptyCollection */
-                    throw new Exception("Failed to upload model part: $response")
+                
+                log.debug "file: $responseRepoPath status: $modelStatus"
+                repositories.setProperty(responseRepoPath, 'hiddenlayer.status', modelStatus)
+                
+                if (config.deleteAfterScan) {
+                    String modelId = result.getModelId()
+                    if (modelId) {
+                        client.deleteModel(modelId)
+                    }
                 }
-            } else {
-                api.uploadModelPart(sensorId, upload.uploadId, part.part_number, buffer)
+            } catch (Exception e) {
+                log.error("Error in background scan", e)
             }
         }
-        api.completeMultipartUpload(sensorId, upload.uploadId)
-        api.createScanRequest(modelInfo, sensorId)
     }
-
-    private void submitHiddenLayerScanToEnterpriseScanner(ModelInfo modelInfo, ResourceStreamHandle content) {
-        String sensorId = UUID.randomUUID()
-        sensorCache.put(modelInfo.repoPath, sensorId)
-
-        api.submitEnterpriseScanRequest(modelInfo, sensorId, content.inputStream)
-    }
-
 }
