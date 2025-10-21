@@ -29,8 +29,8 @@ dependencies {
     pluginLibs 'com.hiddenlayer.api:hiddenlayer-java-core:1.0.0'
     
     // Kotlin dependencies - for runtime in isolated classloader
-    pluginLibs "org.jetbrains.kotlin:kotlin-reflect:1.9.25"
-    pluginLibs "org.jetbrains.kotlin:kotlin-stdlib:1.9.25"
+    pluginLibs "org.jetbrains.kotlin:kotlin-reflect:2.2.20"
+    pluginLibs "org.jetbrains.kotlin:kotlin-stdlib:2.2.20"
     pluginLibs "com.fasterxml.jackson.module:jackson-module-kotlin:2.18.2"
 
     testImplementation 'org.apache.groovy:groovy-all:4.0.23'
